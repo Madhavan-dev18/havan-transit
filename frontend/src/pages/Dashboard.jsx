@@ -34,7 +34,8 @@ function Dashboard({ onBook }) {
       if (dest.trim()) params.dest = dest.trim();
       if (date) params.date = date;
 
-      const response = await axios.get('http://127.0.0.1:8000/api/buses/', {
+      // Replace the localhost URL
+      const response = await axios.get('https://havan-bus-booking-engine.onrender.com/api/buses/', {
         headers: token ? { 'Authorization': `Token ${token}` } : {},
         params: params
       });
@@ -65,7 +66,8 @@ function Dashboard({ onBook }) {
     
     try {
       const token = localStorage.getItem('authToken');
-      const response = await axios.get(`http://127.0.0.1:8000/api/buses/${bus.id}/occupied-seats/`, {
+      // Replace the localhost URL
+      const response = await axios.get(`https://havan-bus-booking-engine.onrender.com/api/buses/${bus.id}/occupied-seats/`, {
         headers: token ? { 'Authorization': `Token ${token}` } : {}
       });
       setOccupiedSeats(response.data.occupied_seats);
