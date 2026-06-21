@@ -44,6 +44,8 @@ class AuthViewsTest(TestCase):
 class BusViewsTest(TestCase):
     def setUp(self):
         self.client = APIClient()
+        self.user = User.objects.create_user(username='test', password='testpassword')
+        self.client.force_authenticate(user=self.user)
         self.bus = Bus.objects.create(
             bus_name="Test Bus",
             source="City A",
