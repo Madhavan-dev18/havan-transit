@@ -52,8 +52,10 @@ class BusViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=['get'], url_path='occupied-seats')
     def occupied_seats(self, request, pk=None):
         bus = self.get_object()
-        confirmed_bookings = Booking.objects.filter(bus=bus, status='CONFIRMED')
-        occupied = [seat for b in confirmed_bookings if b.selected_seats for seat in b.selected_seats]
+        occupied_seats_list = Booking.objects.filter(
+            bus=bus, status='CONFIRMED'
+        ).values_list('selected_seats', flat=True)
+        occupied = [seat for seats in occupied_seats_list if seats for seat in seats]
         return Response({"occupied_seats": occupied}, status=status.HTTP_200_OK)
 
 

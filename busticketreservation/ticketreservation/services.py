@@ -18,11 +18,13 @@ def process_ticket_transaction(user, bus_id, passengers):
         bus = Bus.objects.select_for_update().get(id=bus_id)
 
         # 2. Collision Detection
-        active_bookings = Booking.objects.filter(bus=bus, status='CONFIRMED')
+        active_bookings_seats = Booking.objects.filter(
+            bus=bus, status='CONFIRMED'
+        ).values_list('selected_seats', flat=True)
         already_taken_seats = set()
-        for b in active_bookings:
-            if b.selected_seats:
-                already_taken_seats.update(b.selected_seats)
+        for seats in active_bookings_seats:
+            if seats:
+                already_taken_seats.update(seats)
 
         overlapping_claims = set(requested_seats).intersection(already_taken_seats)
         if overlapping_claims:

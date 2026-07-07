@@ -87,7 +87,7 @@ WSGI_APPLICATION = 'busticketreservation.wsgi.application'
 DATABASES = {
     'default': dj_database_url.config(
         default=os.environ.get('DATABASE_URL', f"sqlite:///{BASE_DIR / 'db.sqlite3'}"),
-        conn_max_age=600
+        conn_max_age=int(os.environ.get('CONN_MAX_AGE') or 0)
     )
 }
 

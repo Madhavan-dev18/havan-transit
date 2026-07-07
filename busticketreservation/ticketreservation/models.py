@@ -38,5 +38,10 @@ class Booking(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
     booked_on = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['bus', 'status']),
+        ]
+
     def __str__(self):
         return f"Ticket {self.ticket_id} - {self.user.username}"

@@ -322,6 +322,8 @@ class ConcurrencyBookingTest(TransactionTestCase):
                 return e
             except Exception as e:
                 return e
+            finally:
+                connection.close()
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             future1 = executor.submit(book_ticket, self.user1)
