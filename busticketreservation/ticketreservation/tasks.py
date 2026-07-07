@@ -18,7 +18,7 @@ def generate_and_send_ticket(booking_id):
         bus = booking.bus
         user = booking.user
         
-        print(f"\n[CELERY WORKER] 📄 Compiling premium boarding pass for Ticket: {booking.ticket_id}")
+        print(f"\n[CELERY WORKER] [INFO] Compiling premium boarding pass for Ticket: {booking.ticket_id}")
 
         # 2. Establish isolated destination directory on the filesystem
         tickets_dir = os.path.join(settings.BASE_DIR, 'generated_tickets')
@@ -202,12 +202,12 @@ def generate_and_send_ticket(booking_id):
 
         # Compile Layout and Lock Binary stream asset to disk
         doc.build(story)
-        print(f"[CELERY WORKER] ✅ Stream compilation success. Asset locked to filesystem location: {pdf_path}\n")
+        print(f"[CELERY WORKER] [SUCCESS] Stream compilation success. Asset locked to filesystem location: {pdf_path}\n")
         return pdf_path
 
     except Booking.DoesNotExist:
-        print(f"[CELERY WORKER] ❌ Execution Aborted: Target Booking ID {booking_id} row is missing.")
+        print(f"[CELERY WORKER] [ERROR] Execution Aborted: Target Booking ID {booking_id} row is missing.")
         return None
     except Exception as e:
-        print(f"[CELERY WORKER] ❌ Layout Compilation Fault: {str(e)}")
+        print(f"[CELERY WORKER] [ERROR] Layout Compilation Fault: {str(e)}")
         return None

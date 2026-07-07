@@ -171,76 +171,111 @@ flowchart TD
 
 ---
 
-## ✨ Key Features
+## ✨ Key Features & Technical Centerpiece
 
-### 🔒 Concurrency-Safe Booking Engine
+### 🔒 Concurrency-Safe Pessimistic Seat Booking (Race Condition Prevention)
 
-> **Feature:** Row-level pessimistic locking using Django ORM's `select_for_update()`
-> 
-> **Benefit:** Eliminates the race condition where two users simultaneously book the last seat. The database itself serialises concurrent requests — no application-level mutex, no overselling.
+The core architectural strength of Havan is its **high-concurrency seat booking system**. Without database-level synchronization, a classic race condition (double booking) occurs when multiple users attempt to reserve the same seat simultaneously:
 
-```python
-# The core locking pattern
-with transaction.atomic():
-    seat = Seat.objects.select_for_update().get(id=seat_id, trip=trip)
-    if seat.is_booked:
-        raise SeatUnavailableError("Seat already taken.")
-    seat.is_booked = True
-    seat.save()
-    Booking.objects.create(user=user, seat=seat, ...)
 ```
+User A (Request) ────┐
+                     ├───► [Read Available Seats] ──► Both see "Seat L-1A Free" ──► [Write Bookings] ──► DOUBLE BOOKED!
+User B (Request) ────┘
+```
+
+Havan prevents this by applying **pessimistic row-level database locking** via Django's `select_for_update()` under an atomic transaction block. The database itself serializes execution:
+
+```
+User A (Request) ──► [Lock Bus Row] ────────────────────────► [Update DB] ──► [Commit & Unlock]
+User B (Request) ───────────────► [Blocked: Queueing on Lock] ──────────────────────────► [Fails: L-1A Taken]
+```
+
+#### The Lock Implementation (`ticketreservation/services.py`)
+```python
+def process_ticket_transaction(user, bus_id, passengers):
+    requested_seats = [p['seat'] for p in passengers]
+    seats_count = len(requested_seats)
+
+    with transaction.atomic():
+        # 1. Acquire pessimistic lock on the Bus row
+        bus = Bus.objects.select_for_update().get(id=bus_id)
+
+        # 2. Collision Detection: Read confirmed bookings under lock
+        active_bookings = Booking.objects.filter(bus=bus, status='CONFIRMED')
+        already_taken_seats = set()
+        for b in active_bookings:
+            if b.selected_seats:
+                already_taken_seats.update(b.selected_seats)
+
+        overlapping_claims = set(requested_seats).intersection(already_taken_seats)
+        if overlapping_claims:
+            raise ValidationError({
+                "error": f"Transaction dropped. Seats recently booked: {list(overlapping_claims)}"
+            })
+
+        if bus.available_seats < seats_count:
+            raise ValidationError({
+                "error": f"Insufficient capacity. Only {bus.available_seats} remaining."
+            })
+
+        # 3. Mutate Inventory and Write Booking
+        bus.available_seats -= seats_count
+        bus.save()
+
+        booking = Booking.objects.create(
+            user=user,
+            bus=bus,
+            selected_seats=requested_seats,
+            passenger_details=passengers,
+            seats_booked=seats_count,
+            total_price=bus.price * seats_count,
+            status='CONFIRMED'
+        )
+    
+    # 4. Background PDF Task (Enqueued AFTER transaction committing)
+    generate_and_send_ticket.delay(booking.id)
+    return booking
+```
+
+We stress-test this behavior using multi-threaded integration tests (`ConcurrencyBookingTest` in [tests.py](file:///m:/Personal/Workspace/havan-transit/busticketreservation/ticketreservation/tests.py)) executing simultaneous reservation requests against the same seat. The test asserts that at most one request succeeds, proving the thread safety and zero-overselling guarantee.
 
 ---
 
 ### 🤖 Self-Healing Daily Inventory
 
-> **Feature:** GitHub Actions CRON workflow runs at midnight UTC, calling a secured internal endpoint to generate the next day's trip inventory.
+> **Feature:** A lightweight daily Render keep-alive cron job calling a secured internal webhook endpoint to automatically populate buses for the next calendar day.
 >
-> **Benefit:** Operators never manually create trips. The system provisions itself. Even after a server restart on Render's free tier, inventory is always fresh. *Zero-ops inventory management.*
+> **Benefit:** No manual administration needed to spin up daily operations. If the server on Render goes idle/sleeps, the next CRON ping wakes it up and regenerates fresh bus routes automatically.
 
 ```yaml
-# .github/workflows/generate_inventory.yml (excerpt)
+# .github/workflows/keepalive.yml (excerpt)
 on:
   schedule:
     - cron: '0 0 * * *'   # Daily at 00:00 UTC
-  workflow_dispatch:        # Manual trigger available
+  workflow_dispatch:      # Allows manual trigger
 
 jobs:
-  generate:
+  ping-render:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger Inventory API
+      - name: Trigger Render API
         run: |
-          curl -X POST ${{ secrets.API_BASE_URL }}/api/internal/generate-inventory/ \
-            -H "Authorization: Bearer ${{ secrets.INVENTORY_API_TOKEN }}" \
-            -H "Content-Type: application/json"
+          curl -X POST https://havan-bus-booking-engine.onrender.com/api/internal/generate-buses/ \
+          -H "Authorization: Bearer ${{ secrets.RENDER_CRON_SECRET }}" \
+          -H "Content-Type: application/json"
 ```
 
 ---
 
 ### 📄 Async PDF Ticket Generation
 
-> **Feature:** PDF ticket rendering is offloaded to a Celery worker via a Redis task queue — completely decoupled from the HTTP request cycle.
+> **Feature:** Layout rendering is offloaded to a Celery worker via Redis task queues, keeping the HTTP cycle non-blocking.
 >
-> **Benefit:** API response time stays under 200ms regardless of PDF complexity. Users get instant booking confirmation; their ticket arrives by email moments later, without the booking endpoint ever blocking.
-
-```
-Booking Request → API Response (fast) → Redis Queue → Celery Worker → PDF → Email
-       ↑                   ↑
-   < 200ms           Immediate 200 OK
-```
+> **Benefit:** Boarding pass PDF compiling takes time. Rather than blocking the user's booking response (saving ~2-4s of latency), the ticket is created in a background thread. Response time stays under 200ms.
 
 ---
 
-### 🏢 Multi-Tenant Architecture
-
-> **Feature:** Operator-scoped data isolation built into the ORM layer via tenant-aware querysets.
->
-> **Benefit:** Multiple bus operators can run on the same platform with zero data leakage. One operator's routes, seats, and bookings are structurally invisible to another.
-
----
-
-### 📱 Decoupled React Frontend
+### 🏢 Decoupled React Frontend
 
 > **Feature:** The React SPA is deployed independently on Vercel's global CDN edge network.
 >
@@ -256,12 +291,12 @@ Havan is engineered with a **security-first posture** at every layer of the stac
 
 | Endpoint Type | Auth Mechanism | Used By |
 |---|---|---|
-| User-facing booking endpoints | `Authorization: Bearer <token>` (DRF Token Auth) | React frontend, authenticated users |
-| Internal automation endpoints | `Authorization: Bearer <INVENTORY_API_TOKEN>` (GitHub Secret) | GitHub Actions CRON only |
+| User-facing booking endpoints | `Authorization: Token <token>` (DRF Token Auth) | React frontend, authenticated users |
+| Internal automation endpoints | `Authorization: Bearer <INVENTORY_API_TOKEN>` | GitHub Actions CRON only |
 | Admin panel | Django session auth + superuser flag | Ops team |
 
-> [!IMPORTANT]
-> **Internal endpoints are never exposed to the frontend.** The `/api/internal/` namespace is protected by a separate, long-lived secret token stored exclusively in GitHub Secrets and Render environment variables. It is **never** committed to source code, never logged, and never returned in API responses.
+> [IMPORTANT]
+> **Internal endpoints are never exposed to the frontend.** The `/api/internal/` namespace is protected by a separate, long-lived secret token checked in `views.py` against both `CRON_SECRET` and `INVENTORY_API_TOKEN`.
 
 ### Environment Variable Isolation
 
@@ -269,27 +304,16 @@ Havan is engineered with a **security-first posture** at every layer of the stac
 ┌─────────────────────┐     ┌─────────────────────┐     ┌─────────────────────┐
 │   GitHub Secrets    │     │   Render Env Vars   │     │   Vercel Env Vars   │
 │                     │     │                     │     │                     │
-│ INVENTORY_API_TOKEN │     │ SECRET_KEY          │     │ VITE_API_BASE_URL   │
-│ API_BASE_URL        │     │ DATABASE_URL        │     │                     │
+│ RENDER_CRON_SECRET  │     │ SECRET_KEY          │     │ VITE_API_BASE_URL   │
+│                     │     │ DATABASE_URL        │     │                     │
 │                     │     │ REDIS_URL           │     │                     │
-│                     │     │ INVENTORY_API_TOKEN │     │                     │
+│                     │     │ CRON_SECRET         │     │                     │
 │                     │     │ ALLOWED_HOSTS       │     │                     │
 └─────────────────────┘     └─────────────────────┘     └─────────────────────┘
          │                           │                           │
          └───────────────────────────┴───────────────────────────┘
                     ✅ Zero plaintext secrets in source code
 ```
-
-> [!NOTE]
-> **Pro-Tip:** Rotate `INVENTORY_API_TOKEN` by updating it simultaneously in GitHub Secrets and Render's environment variables. The next CRON run automatically uses the new token — no code changes, no redeployment required.
-
-### Additional Security Measures
-
-- ✅ **CORS**: Strict origin whitelist — only the Vercel domain is allowed on the Django API
-- ✅ **`DEBUG=False`** enforced in all Render deployments via environment variable
-- ✅ **`ALLOWED_HOSTS`** explicitly set — no wildcard hosts in production
-- ✅ **Database**: Neon's serverless PostgreSQL uses TLS-only connections; no public IP exposure
-- ✅ **Celery tasks**: Workers run in an isolated Render service with no public-facing ports
 
 ---
 
@@ -319,7 +343,7 @@ cd havan-bus-booking
 
 ```bash
 # Navigate to the backend directory
-cd backend
+cd busticketreservation
 
 # Create and activate a virtual environment
 python -m venv venv
@@ -333,7 +357,7 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-**Edit `.env`** with your values (see [Environment Variables](#-environment-variables) below), then:
+**Edit `.env`** with your values, then:
 
 ```bash
 # Apply database migrations
@@ -349,9 +373,9 @@ python manage.py runserver
 **Start the Celery worker** (in a separate terminal):
 
 ```bash
-cd backend
+cd busticketreservation
 source venv/bin/activate
-celery -A havan worker --loglevel=info
+celery -A busticketreservation worker --loglevel=info
 ```
 
 ---
@@ -369,7 +393,7 @@ npm install
 cp .env.example .env.local
 ```
 
-Set `VITE_API_BASE_URL=http://localhost:8000` in `.env.local`, then:
+Set `VITE_API_BASE_URL=http://localhost:8000/api/` in `.env.local`, then:
 
 ```bash
 # Start the development server
@@ -384,16 +408,27 @@ The React app will be available at `http://localhost:5173`.
 
 ```bash
 # Simulate what GitHub Actions does every midnight
-curl -X POST http://localhost:8000/api/internal/generate-inventory/ \
+curl -X POST http://localhost:8000/api/internal/generate-buses/ \
   -H "Authorization: Bearer your_local_dev_token" \
   -H "Content-Type: application/json"
 ```
 
 ---
 
+## ⚠️ Known Limitations & Assumptions
+
+As a showcase portfolio project, Havan makes the following design decisions and assumptions:
+
+1. **Email Delivery Mocking**: The Celery task for PDF generation operates synchronously inside tests and creates local PDF files in the `generated_tickets/` directory. In production, this output path should be connected to a secure cloud blob storage provider (e.g. AWS S3) rather than storing files directly on Render's ephemeral filesystem.
+2. **Simplified Seat Mapping**: Seats are stored as an array of identifiers (e.g. `L-1A`) directly inside the JSON-serialized fields of the `Booking` model, rather than building a highly normalized separate table for each individual physical seat. High-concurrency is achieved by acquiring a database lock (`select_for_update()`) on the target `Bus` row to serialize reservations and prevent concurrent seat overlaps.
+3. **No Distributed Locks**: If the backend is scaled horizontally across multiple database nodes, a distributed lock provider (like Redlock via Redis) or a more granular database transaction isolation level (e.g., Serializable) would be required to prevent edge-case race conditions on distributed architectures. The current single-primary database setup is fully protected by pessimistic locking on PostgreSQL.
+4. **Mocked Payment Verification**: The ticket is marked `CONFIRMED` immediately upon saving the booking details. A full production implementation would put the booking in `PENDING` state and leverage a payment gateway webhook (e.g. Stripe) to update status to `CONFIRMED` asynchronously.
+
+---
+
 ## 🔑 Environment Variables
 
-### Backend (`backend/.env`)
+### Backend (`busticketreservation/.env`)
 
 | Variable | Required | Description |
 |---|---|---|
@@ -404,16 +439,15 @@ curl -X POST http://localhost:8000/api/internal/generate-inventory/ \
 | `ALLOWED_HOSTS` | ✅ | Comma-separated allowed hosts (e.g., `localhost,your-app.onrender.com`) |
 | `CORS_ALLOWED_ORIGINS` | ✅ | Frontend origin (e.g., `https://your-app.vercel.app`) |
 | `INVENTORY_API_TOKEN` | ✅ | Long, random secret used by GitHub Actions to authenticate inventory calls |
-| `EMAIL_HOST_USER` | ⚡ | SMTP user for ticket email delivery |
-| `EMAIL_HOST_PASSWORD` | ⚡ | SMTP password |
+| `CRON_SECRET` | ✅ | Alternative environment variable name used in codebase for webhook pings |
 
 ### Frontend (`frontend/.env.local`)
 
 | Variable | Required | Description |
 |---|---|---|
-| `VITE_API_BASE_URL` | ✅ | Base URL of the Django API (e.g., `https://your-api.onrender.com`) |
+| `VITE_API_BASE_URL` | ✅ | Base URL of the Django API (e.g., `https://your-api.onrender.com/api/`) |
 
-> [!WARNING]
+> [WARNING]
 > **Never commit `.env` or `.env.local` files.** Both are already in `.gitignore`. Use your hosting platform's environment variable management (Render Dashboard / Vercel Project Settings) for production values.
 
 ---
@@ -422,14 +456,40 @@ curl -X POST http://localhost:8000/api/internal/generate-inventory/ \
 
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
-| `POST` | `/api/auth/login/` | None | Obtain user auth token |
-| `POST` | `/api/auth/register/` | None | Register a new user |
-| `GET` | `/api/trips/` | Bearer Token | List available trips |
-| `GET` | `/api/trips/{id}/seats/` | Bearer Token | Get seat map for a trip |
+| `POST` | `/api/login/` | None | Obtain user auth token |
+| `POST` | `/api/register/` | None | Register a new user |
+| `GET` | `/api/buses/` | Bearer Token | List scheduled buses |
+| `GET` | `/api/buses/{id}/occupied-seats/` | Bearer Token | Get occupied seats for a bus |
 | `POST` | `/api/bookings/` | Bearer Token | Create a booking (concurrency-safe) |
-| `GET` | `/api/bookings/{id}/` | Bearer Token | Retrieve booking details |
-| `GET` | `/api/bookings/{id}/ticket/` | Bearer Token | Download PDF ticket |
-| `POST` | `/api/internal/generate-inventory/` | Internal Token | **Automation only** — generate daily inventory |
+| `GET` | `/api/bookings/` | Bearer Token | List user bookings |
+| `GET` | `/api/bookings/{id}/download/` | Bearer Token | Download PDF boarding pass |
+| `POST` | `/api/internal/generate-buses/` | Internal Token | **Automation webhook** — generate daily bus fleet |
+
+---
+
+## ⚡ API Load Testing (k6 Performance Script)
+
+To ensure the row-locking booking engine handles spikes in concurrent traffic without deadlocking, Havan includes a **k6 performance load test script** (`load_test.js`) in the root directory.
+
+The script models real user behavior:
+1. Performs a setup phase to register and login a load test user to obtain a stateless Bearer token.
+2. Queries the `/api/buses/` endpoint to view available routes.
+3. Queries `/api/buses/{id}/occupied-seats/` to check taken seats.
+4. Generates simultaneous booking requests targeting random seats (measuring how many get a confirmation and how many are cleanly rejected with `400 Bad Request` once seats are filled).
+
+### Running the Load Test
+Ensure [k6](https://k6.io/) is installed, start your local server, then execute:
+```bash
+# Run stress test against local server
+k6 run load_test.js
+
+# Or run against a custom deployment base URL
+k6 run -e API_URL=https://your-api.onrender.com/api load_test.js
+```
+
+### Target SLA Thresholds
+* **Failure Rate**: < 1% error rate (no server crashes or 500 Internals under locking contention).
+* **p95 Latency**: 95% of API requests completed in under **500ms** (ensuring swift lock releases).
 
 ---
 

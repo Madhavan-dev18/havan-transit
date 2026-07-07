@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import axios from 'axios';
 
@@ -10,6 +10,29 @@ import Tickets from './pages/Tickets';
 // Change this line
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://havan-bus-booking-engine.onrender.com/api/';
 
+function ProtectedLayout({ token, message, onLogout, children }) {
+  if (!token) return <Navigate to="/login" />;
+  return (
+    <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '0 20px', boxSizing: 'border-box' }}>
+      <Navbar onLogout={onLogout} />
+      {message.text && (
+        <div style={{ 
+          padding: '12px 20px', 
+          backgroundColor: message.type === 'error' ? '#fef2f2' : '#f0fdf4', 
+          color: message.type === 'error' ? '#991b1b' : '#166534', 
+          borderRadius: '8px', 
+          border: `1px solid ${message.type === 'error' ? '#fecaca' : '#bbf7d0'}`,
+          marginBottom: '20px', 
+          fontWeight: '600' 
+        }}>
+          {message.text}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
 function App() {
   const [token, setToken] = useState(localStorage.getItem('authToken') || '');
   const [bookings, setBookings] = useState([]);
@@ -19,10 +42,6 @@ function App() {
     baseURL: API_BASE_URL,
     headers: token ? { 'Authorization': `Token ${token}` } : {},
   });
-
-  useEffect(() => {
-    if (token) fetchBookings();
-  }, [token]);
 
   const showMessage = (type, text) => {
     setMessage({ type, text });
@@ -38,6 +57,7 @@ function App() {
       showMessage('success', 'Authentication successful.');
       navigate('/dashboard'); 
     } catch (err) {
+      console.error("Login authentication failure:", err);
       showMessage('error', 'Invalid credentials. Please try again.');
     }
   };
@@ -54,6 +74,7 @@ function App() {
       showMessage('success', 'Account created successfully! Welcome to Havan Bus.');
       navigate('/dashboard'); 
     } catch (err) {
+      console.error("Registration failure:", err);
       const errorMsg = err.response?.data?.username?.[0] || 'Registration rejected. Username may already be taken.';
       showMessage('error', errorMsg);
     }
@@ -73,6 +94,12 @@ function App() {
       console.error("Failed to sync ledger:", err);
     }
   };
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (token) fetchBookings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
 
   const handleBookTicket = async (busId, passengerPayload) => {
     try {
@@ -105,31 +132,9 @@ function App() {
       virtualLink.remove();
       window.URL.revokeObjectURL(blobUrl);
     } catch (err) {
+      console.error("Download ticket failure:", err);
       alert('Unable to capture PDF stream. The background worker may still be rendering the file.');
     }
-  };
-
-  const ProtectedLayout = ({ children }) => {
-    if (!token) return <Navigate to="/login" />;
-    return (
-      <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '0 20px', boxSizing: 'border-box' }}>
-        <Navbar onLogout={handleGlobalLogout} />
-        {message.text && (
-          <div style={{ 
-            padding: '12px 20px', 
-            backgroundColor: message.type === 'error' ? '#fef2f2' : '#f0fdf4', 
-            color: message.type === 'error' ? '#991b1b' : '#166534', 
-            borderRadius: '8px', 
-            border: `1px solid ${message.type === 'error' ? '#fecaca' : '#bbf7d0'}`,
-            marginBottom: '20px', 
-            fontWeight: '600' 
-          }}>
-            {message.text}
-          </div>
-        )}
-        {children}
-      </div>
-    );
   };
 
   return (
@@ -141,13 +146,13 @@ function App() {
         <Route path="/login" element={<Login onLogin={handleGlobalLogin} onRegister={handleGlobalRegister} message={message} />} />
         
         <Route path="/dashboard" element={
-          <ProtectedLayout>
+          <ProtectedLayout token={token} message={message} onLogout={handleGlobalLogout}>
             <Dashboard onBook={handleBookTicket} />
           </ProtectedLayout>
         } />
         
         <Route path="/tickets" element={
-          <ProtectedLayout>
+          <ProtectedLayout token={token} message={message} onLogout={handleGlobalLogout}>
             <Tickets bookings={bookings} onDownload={handleDownloadTicket} />
           </ProtectedLayout>
         } />

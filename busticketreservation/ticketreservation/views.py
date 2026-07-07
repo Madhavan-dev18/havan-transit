@@ -102,10 +102,13 @@ class BookingViewSet(viewsets.ModelViewSet):
 def trigger_daily_buses(request):
     """Secured webhook for GitHub Actions CRON."""
     provided_secret = request.headers.get('Authorization', '')
-    expected_secret = f"Bearer {os.environ.get('CRON_SECRET', 'UNSET')}"
+    
+    # Accept either CRON_SECRET or INVENTORY_API_TOKEN to prevent configuration discrepancies
+    cron_secret = os.environ.get('CRON_SECRET') or os.environ.get('INVENTORY_API_TOKEN')
+    expected_secret = f"Bearer {cron_secret}" if cron_secret else "Bearer UNSET"
     
     # Cryptographically secure string comparison prevents timing attacks
-    if not os.environ.get('CRON_SECRET') or not hmac.compare_digest(provided_secret, expected_secret):
+    if not cron_secret or not hmac.compare_digest(provided_secret, expected_secret):
         return JsonResponse({"error": "Unauthorized."}, status=401)
         
     try:

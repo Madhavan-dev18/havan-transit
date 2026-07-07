@@ -1,4 +1,4 @@
-name: Daily Bus Generator
+name: Daily Render Keep-Alive / Bus Generator
 
 on:
   schedule:

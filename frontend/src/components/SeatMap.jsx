@@ -1,4 +1,3 @@
-import React from 'react';
 
 function SeatMap({ occupiedSeats, selectedSeats, onSeatClick }) {
   const totalRows = 10;

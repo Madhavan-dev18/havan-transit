@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import axios from 'axios';
 import SeatMap from '../components/SeatMap';
 
@@ -15,12 +15,7 @@ function Dashboard({ onBook }) {
   const [selectedSeats, setSelectedSeats] = useState([]);
   const [passengerForms, setPassengerForms] = useState({});
   const [loading, setLoading] = useState(false);
-  const [loadingSeats, setLoadingSeats] = useState(false);
   const [searchExecuted, setSearchExecuted] = useState(false);
-
-  useEffect(() => {
-    fetchLiveBuses();
-  }, []);
 
   const fetchLiveBuses = async () => {
     setLoading(true);
@@ -44,12 +39,19 @@ function Dashboard({ onBook }) {
       setSearchExecuted(true);
     } catch (err) {
       // Clean fallback if backend is offline during UI testing
+      console.error("Error fetching live buses:", err);
       setBuses([]);
       setSearchExecuted(true);
     } finally {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchLiveBuses();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSelectBusForMapping = async (bus) => {
     if (activeBusId === bus.id) {
@@ -59,7 +61,6 @@ function Dashboard({ onBook }) {
       return;
     }
     
-    setLoadingSeats(true);
     setActiveBusId(bus.id);
     setSelectedSeats([]);
     setPassengerForms({});
@@ -72,9 +73,8 @@ function Dashboard({ onBook }) {
       });
       setOccupiedSeats(response.data.occupied_seats);
     } catch (err) {
+      console.error("Error fetching occupied seats:", err);
       setOccupiedSeats([]);
-    } finally {
-      setLoadingSeats(false);
     }
   };
 
